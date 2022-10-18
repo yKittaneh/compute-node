@@ -11,55 +11,87 @@ import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.logging.Logger;
 
-public class CpuController {
-    private static final Logger logger = Logger.getLogger(CpuController.class.getName());
+public class CpuUtils {
+    private static final Logger logger = Logger.getLogger(CpuUtils.class.getName());
+
+    private static final String CONTAINER_NAME_PREFIX = "mosaik_container_";
+
+    private static String CONTAINER_NAME;
+
+    private static final String TASK_NAME = "TaskSimulator";
 
     public static List<String> CPU_LIMIT_PID_LIST = new ArrayList<>();
 
     public static String TASK_SIM_PID;
 
     private static double tempGridPowerSum;
+
     private static long tempGridPowerCount;
 
-    private static String getTaskSimPid() {
-        if (TASK_SIM_PID == null) {
-            String line;
-            String taskSimProcessLine = null;
+    public static void main(String[] args) {
+        logger.info("CpuUtils.main called");
 
-            try {
-                ProcessBuilder builder = new ProcessBuilder();
-                builder.command("bash", "-c", "ps f -A");
-                Process process = builder.start();
-                BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-                while ((line = bufferedReader.readLine()) != null) {
-                    if (line.contains("org.example.TaskSimulator")) {
-                        taskSimProcessLine = line;
-                        logger.info("found it! ... " + taskSimProcessLine);
-                        break;
-                    }
-                }
+        getTaskCpuLevel();
 
-                process.waitFor();
-                logger.info("exit: " + process.exitValue());
-                process.destroy();
-
-                updateTaskSimPID(taskSimProcessLine);
-            } catch (Exception ex) {
-                throw new RuntimeException("Error while getting task sim pid", ex);
-            }
-        }
-
-        return TASK_SIM_PID;
+//        getContainerName();
     }
 
-    private static void updateTaskSimPID(String taskSimProcessLine) {
-        if (taskSimProcessLine == null)
-            throw new RuntimeException("Could not find task sim process in the result of command 'ps f -A");
+    public static double getTaskCpuLevel() {
+        logger.info("CpuUtils.getTaskCpuLevel called");
 
-        String[] splitLine = taskSimProcessLine.trim().split(" ");
-        TASK_SIM_PID = splitLine[0];
+        if (isStringEmpty(CONTAINER_NAME))
+            getContainerName();
+//        Todo: how could computeNode know the name of the task to choose/grep it out of the result of docker top?! pass it as param from mosaik?
+        String command = "docker top " + CONTAINER_NAME + " o pid,pcpu,cmd | awk '{ printf(\"%s === %s === %s\\n\", $2, $6, $7); }' | grep " + TASK_NAME;
 
-        logger.info("TASK_SIM_PID: " + TASK_SIM_PID);
+        String resultLine = runCommandAndExtractLine(command, TASK_NAME);
+
+        if (resultLine == null)
+            throw new RuntimeException("Could not find task [" + TASK_NAME + "] in the result of command " + command + " - make sure the task is running and its name contains " + TASK_NAME);
+
+        String[] splitResult = resultLine.split("===");
+
+        logger.info("CPU level = " + splitResult[0].trim());
+        return Double.parseDouble(splitResult[0].trim());
+    }
+
+    private static void getContainerName() {
+        logger.info("CpuUtils.getContainerName called");
+        String command = "docker ps --filter \"name=" + CONTAINER_NAME_PREFIX + "\" --format \"table {{.Names}}\"";
+
+        CONTAINER_NAME = runCommandAndExtractLine(command, CONTAINER_NAME_PREFIX);
+
+        if (CONTAINER_NAME == null)
+            throw new RuntimeException("Could not find container in the result of command " + command + " - make sure the container is running and its name starts with " + CONTAINER_NAME_PREFIX);
+
+        logger.info("CONTAINER_NAME = " + CONTAINER_NAME);
+    }
+
+    private static String runCommandAndExtractLine(String command, String matchingString) {
+        String line;
+        String resultLine = null;
+        logger.info("going to run command " + command + ". Looking for [" + matchingString + "]");
+        try {
+            ProcessBuilder builder = new ProcessBuilder();
+            builder.command("bash", "-c", command);
+            Process process = builder.start();
+            BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            while ((line = bufferedReader.readLine()) != null) {
+                if (line.contains(matchingString)) {
+                    resultLine = line;
+                    logger.info("found it! ... " + CONTAINER_NAME);
+                    break;
+                }
+            }
+
+            process.waitFor();
+            logger.info("exit: " + process.exitValue());
+            process.destroy();
+
+            return resultLine;
+        } catch (Exception ex) {
+            throw new RuntimeException("Error while getting container name", ex);
+        }
     }
 
     private static void runCommand(String command) {
@@ -137,8 +169,8 @@ public class CpuController {
 
     public static void startCpuLimitProcess() {
         logger.info("startCpuLimitProcess called");
-        String command = "cpulimit -p " + getTaskSimPid() + " -l 50 -b";
-        runCommand(command);
+//        String command = "cpulimit -p " + getTaskSimPid() + " -l 50 -b";
+//        runCommand(command);
         logger.info("startCpuLimitProcess finished");
     }
 
@@ -147,7 +179,7 @@ public class CpuController {
         runCommand("kill -9 " + String.join(" ", CPU_LIMIT_PID_LIST));
 
         // send SIGCONT signal to the task sim process in case cpulimit is killed while task sim is stopped (SIGSTOP) (as part of the cpulimit operation)
-        runCommand("kill -s SIGCONT " + getTaskSimPid());
+//        runCommand("kill -s SIGCONT " + getTaskSimPid());
 
         logger.info("clearing CPU_LIMIT_PID_LIST");
         CPU_LIMIT_PID_LIST.clear();

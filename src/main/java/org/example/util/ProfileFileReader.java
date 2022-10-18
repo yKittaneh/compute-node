@@ -1,6 +1,6 @@
 package org.example.util;
 
-import org.example.NodeSimulator;
+import org.example.ComputeNode;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
 import org.json.simple.parser.ParseException;
@@ -14,8 +14,8 @@ import java.time.LocalDateTime;
 import java.util.*;
 import java.util.zip.GZIPInputStream;
 
-import static org.example.NodeSimulator.DATE_TIME_FORMATTER;
-import static org.example.NodeSimulator.isStringEmpty;
+import static org.example.CpuUtils.isStringEmpty;
+import static org.example.ComputeNode.DATE_TIME_FORMATTER;
 
 public class ProfileFileReader {
 
@@ -42,7 +42,7 @@ public class ProfileFileReader {
     public void read() {
 
         // todo/future improvements (low): validate the structure/format of the profiles file
-        try (GZIPInputStream gis = new GZIPInputStream(NodeSimulator.class.getClassLoader().getResourceAsStream(fileName))) {
+        try (GZIPInputStream gis = new GZIPInputStream(ComputeNode.class.getClassLoader().getResourceAsStream(fileName))) {
 
             Reader decoder = new InputStreamReader(gis, StandardCharsets.UTF_8);
             BufferedReader bufferedReader = new BufferedReader(decoder);

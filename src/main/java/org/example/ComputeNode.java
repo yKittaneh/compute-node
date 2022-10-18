@@ -1,10 +1,20 @@
 package org.example;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import de.offis.mosaik.api.SimProcess;
 import de.offis.mosaik.api.Simulator;
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 import org.json.simple.JSONValue;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.BufferingClientHttpRequestFactory;
+import org.springframework.http.client.ClientHttpRequestFactory;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.web.client.RestTemplate;
 
 import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
@@ -15,9 +25,7 @@ import java.util.logging.Level;
 import java.util.logging.LogManager;
 import java.util.logging.Logger;
 
-
-//    todo: this smart meter has to use docker top to lookup cpu levels of the task sim inside the container?? not sure of this actually
-// todo: it has to run outside of docker. the idea is that it could be plugged into any black box container
+import static java.lang.Math.abs;
 
 /*
 This means we need a “layer” between Mosaik and the Docker container, which takes care of the message passing.
@@ -30,17 +38,17 @@ No application within the container should implement any Mosaik API, only the �
       So this is the information the layer receives from the simulation on every step() [2]
  */
 
-public class ControlNode extends Simulator {
-    private static final Logger logger = Logger.getLogger(ControlNode.class.getName());
+public class ComputeNode extends Simulator {
+    private static final Logger logger = Logger.getLogger(ComputeNode.class.getName());
 
     private static final JSONObject META = (JSONObject) JSONValue.parse(("{"
             + "    'api_version': " + Simulator.API_VERSION + ","
             + "    'type': 'time-based',"
             + "    'models': {"
-            + "        'ControlNode': {"
+            + "        'ComputeNode': {"
             + "            'public': true,"
             + "            'params': [],"
-            + "            'attrs': ['aggregate_power', 'battery_power', 'pv_power', 'grid_power', 'edge_node_need']"
+            + "            'attrs': ['aggregate_power', 'battery_power', 'pv_power', 'grid_power', 'container_need']"
             + "        }"
             + "    }"
             + "}").replace("'", "\""));
@@ -56,10 +64,14 @@ public class ControlNode extends Simulator {
     private double gridPower;
     private double pvPower;
     private double batteryPower;
-    private double edgeNodeNeed;
+    private double containerNeed;
     private double aggregatePower;
 
-    public ControlNode(String simName) {
+    private static RestTemplate restTemplate;
+
+    private static String restServiceUrl;
+
+    public ComputeNode(String simName, String restUrl) {
         super(simName);
 
         LogManager.getLogManager().addLogger(logger);
@@ -68,11 +80,17 @@ public class ControlNode extends Simulator {
         this.stepsInfo = new HashMap<>();
         DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
 
+        restServiceUrl = restUrl;
+        ClientHttpRequestFactory factory = new BufferingClientHttpRequestFactory(new SimpleClientHttpRequestFactory());
+        restTemplate = new RestTemplate(factory);
+
         logger.info("org.example.ControlNode constructed");
     }
 
     public static void main(String[] args) throws Exception {
         logger.info("org.example.ControlNode main started ... ");
+
+//        testRestServer();
 
 //        testCpuLimit();
 
@@ -82,7 +100,7 @@ public class ControlNode extends Simulator {
     }
 
     private static void runSimulation(String[] args) throws Exception {
-        Simulator sim = new ControlNode("ControlNode");
+        Simulator sim = new ComputeNode("ControlNode", "http://localhost:5567");
         if (args.length < 1) {
             String[] ipaddr = {"127.0.0.1:8000"};
             SimProcess.startSimulation(ipaddr, sim);
@@ -123,26 +141,27 @@ public class ControlNode extends Simulator {
     public long step(long time, Map<String, Object> inputs, long maxAdvance) throws Exception {
         logger.info("step called ");
 
-        // todo (medium): for loop below is not needed? extract gridPower value directly? -- rn it is needed bcs we have another attr (pvPower)
         for (Map.Entry<String, Object> entity : inputs.entrySet()) {
             Map<String, Object> attributes = (Map<String, Object>) entity.getValue();
             for (Map.Entry<String, Object> attr : attributes.entrySet()) {
-                if (attr.getKey().equals("grid_power")) // todo: grid_power needed?
-                    handleGridPowerValue(((Number) ((JSONObject) attr.getValue()).values().toArray()[0]).doubleValue());
+//                if (attr.getKey().equals("grid_power")) // todo: grid_power needed?
+//                    handleGridPowerValue(((Number) ((JSONObject) attr.getValue()).values().toArray()[0]).doubleValue());
                 if (attr.getKey().equals("pv_power"))
                     handlePvPowerValue(((Number) ((JSONObject) attr.getValue()).values().toArray()[0]).doubleValue());
                 if (attr.getKey().equals("battery_power"))
                     handleBatteryPowerValue(((Number) ((JSONObject) attr.getValue()).values().toArray()[0]).doubleValue());
-                if (attr.getKey().equals("edge_node_need"))
-                    handleEdgeNodeNeedValue(((Number) ((JSONObject) attr.getValue()).values().toArray()[0]).doubleValue());
             }
         }
-        // todo (low): is this needed? SIMULATOR.step() -- rn it saves each step's info but the info is not used
+
+        this.aggregatePower = this.batteryPower + this.pvPower;
+
+        // todo (low): is this needed? -- rn it saves each step's info but the info is not used. Use for evaluation?
         updateStepInfo();
 
-        return time + 900; // every 15 mins, todo: change?
-    }
+        pushInfoToContainer();
 
+        return time + 900; // every 15 mins, todo: change returned time?
+    }
 
     @Override
     public Map<String, Object> getData(Map<String, List<String>> outputs) throws Exception {
@@ -156,9 +175,10 @@ public class ControlNode extends Simulator {
             Map<String, Object> values = new HashMap<>();
             for (String attr : entity.getValue()) {
                 switch (attr) {
-                    case "P_out":
-                        values.put(attr, 500); // todo: get cpu power need from node
-                        logger.info("P_out = " + values.get(attr));
+                    case "container_need":
+                        // todo: we get value from container's cpu level, need to apply a power model. What? How?
+                        values.put(attr, CpuUtils.getTaskCpuLevel() * 15);
+                        logger.info("container_need = " + values.get(attr));
                         break;
                     case "aggregate_power":
                         values.put(attr, this.aggregatePower);
@@ -169,49 +189,85 @@ public class ControlNode extends Simulator {
                         throw new RuntimeException("unexpected attr requested [" + attr + "]");
                 }
             }
+
             data.put(ENTITY_ID, values);
         }
         return data;
     }
 
-    private void handlePvPowerValue(double pvPower) {
-        // todo (high): consider using pv_power to directly get how much power the PV is producing instead of using grid_power which we get from the grid node. Advantages vs Disadvantages?
-        // todo (high): and accordingly maybe use pv_power to change cpu level limitation instead of grid_power
-        logger.info("+++ pvPower = [" + pvPower + "]");
+    private void pushInfoToContainer() {
+        logger.info("pushing input map to container");
 
-        this.pvPower = pvPower;
+        logger.info("sending rest request to " + restServiceUrl + "/stepInformation");
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        ObjectMapper objectMapper = new ObjectMapper();
+
+        Map<String, Double> infoMap = new HashMap<>();
+        infoMap.put("pv_power", this.pvPower);
+        infoMap.put("battery_power", this.batteryPower);
+
+        try {
+            String json = objectMapper.writeValueAsString(infoMap);
+            HttpEntity<String> request = new HttpEntity<>(json, headers);
+            ResponseEntity<String> response = restTemplate.postForEntity(restServiceUrl + "/stepInformation", request, String.class);
+
+            logger.info("response: " + response);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private void handlePvPowerValue(double pvPower) {
+        this.pvPower = abs(pvPower);
+        logger.info("+++ pvPower = [" + this.pvPower + "]");
     }
 
     private void handleGridPowerValue(double gridPower) {
-        logger.info("+++ gridPower = [" + gridPower + "]");
+        this.gridPower = abs(gridPower);
 
-        this.gridPower = gridPower;
+        logger.info("+++ gridPower = [" + this.gridPower + "]");
 
-        CpuUtils.handleCpuLevel(gridPower); // todo: philipp said apply a power model here. what does it mean? do we still limit cpu
+        CpuUtils.handleCpuLevel(this.gridPower); // todo: philipp said apply a power model here. what does it mean? do we still limit cpu
     }
 
     private void handleBatteryPowerValue(double batteryPower) {
-        logger.info("+++ batterPower = [" + batteryPower + "]");
-
-        this.batteryPower = batteryPower;
+        this.batteryPower = abs(batteryPower);
+        logger.info("+++ batterPower = [" + this.batteryPower + "]");
     }
 
-    private void handleEdgeNodeNeedValue(double edgeNodeNeed) {
-        logger.info("+++ edgeNodeNeed = [" + edgeNodeNeed + "]");
+    private void handleContainerNeedValue(double containerNeed) {
+        logger.info("+++ containerNeed = [" + containerNeed + "]");
 
-        this.edgeNodeNeed = edgeNodeNeed;
+        this.containerNeed = containerNeed;
     }
 
     public void updateStepInfo() {
         this.stepsInfo.put(++this.stepCount, new HashMap<>());
-        this.stepsInfo.get(this.stepCount).put("gridPower", this.gridPower);
         this.stepsInfo.get(this.stepCount).put("pvPower", this.pvPower);
         this.stepsInfo.get(this.stepCount).put("batteryPower", this.batteryPower);
-        this.stepsInfo.get(this.stepCount).put("edgeNodeNeed", this.edgeNodeNeed);
+        this.stepsInfo.get(this.stepCount).put("containerNeed", this.containerNeed);
+//        this.stepsInfo.get(this.stepCount).put("aggregatePower", this.aggregatePower);
+//        this.stepsInfo.get(this.stepCount).put("gridPower", this.gridPower);
+    }
 
-        this.aggregatePower = this.batteryPower + this.pvPower + this.gridPower - this.edgeNodeNeed;
-        this.stepsInfo.get(this.stepCount).put("aggregatePower", this.aggregatePower);
+    private static void testRestServer() {
+        logger.info("started testRestServer");
 
+        ComputeNode node = new ComputeNode("testRestServer", "http://localhost:5567");
+
+        logger.info("sending rest request to " + restServiceUrl + "/");
+        ResponseEntity<String> response = restTemplate.getForEntity(restServiceUrl + "/", String.class);
+
+        logger.info("response: " + response);
+
+        node.pvPower = 987.6D;
+        node.batteryPower = 2005.7D;
+
+        node.pushInfoToContainer();
+
+        logger.info("finished testRestServer");
     }
 
     private static void testCpuLimit() {
