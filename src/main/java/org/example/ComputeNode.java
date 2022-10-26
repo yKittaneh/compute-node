@@ -53,6 +53,8 @@ public class ComputeNode extends Simulator {
             + "    }"
             + "}").replace("'", "\""));
 
+    private static long STEP_SIZE;
+
     final Map<Long, Map<String, Object>> stepsInfo;
 
     private Long stepCount = 0L;
@@ -70,6 +72,10 @@ public class ComputeNode extends Simulator {
     private static RestTemplate restTemplate;
 
     private static String restServiceUrl;
+
+    private static double MIN_CONSUMPTION;
+
+    private static double MAX_CONSUMPTION;
 
     public ComputeNode(String simName, String restUrl) {
         super(simName);
@@ -117,6 +123,15 @@ public class ComputeNode extends Simulator {
         if (simParams.containsKey("eid"))
             ENTITY_ID = simParams.get("eid").toString();
 
+        if (simParams.containsKey("step_size"))
+            STEP_SIZE = (Long) simParams.get("step_size");
+
+        if (simParams.containsKey("min_consumption"))
+            MIN_CONSUMPTION = ((Number) simParams.get("min_consumption")).doubleValue();
+
+        if (simParams.containsKey("max_consumption"))
+            MAX_CONSUMPTION = ((Number) simParams.get("max_consumption")).doubleValue();
+
         return META;
     }
 
@@ -160,7 +175,7 @@ public class ComputeNode extends Simulator {
 
         pushInfoToContainer();
 
-        return time + 900; // every 15 mins, todo: change returned time?
+        return time + STEP_SIZE;
     }
 
     @Override
@@ -176,13 +191,13 @@ public class ComputeNode extends Simulator {
             for (String attr : entity.getValue()) {
                 switch (attr) {
                     case "container_need":
-                        // todo: we get value from container's cpu level, need to apply a power model. What? How?
-                        values.put(attr, CpuUtils.getTaskCpuLevel() * 15);
-                        logger.info("container_need = " + values.get(attr));
+                        this.containerNeed = applyPowerModel(CpuUtils.getTaskCpuLevel());
+                        values.put(attr, this.containerNeed);
+                        logger.info("container_need = " + this.containerNeed);
                         break;
                     case "aggregate_power":
                         values.put(attr, this.aggregatePower);
-                        logger.info("aggregate_power = " + values.get(attr));
+                        logger.info("aggregate_power = " + this.aggregatePower);
                         break;
                     default:
                         logger.warning("unexpected attr requested [" + attr + "]");
@@ -193,6 +208,10 @@ public class ComputeNode extends Simulator {
             data.put(ENTITY_ID, values);
         }
         return data;
+    }
+
+    private double applyPowerModel(double taskCpuLevel) {
+        return MIN_CONSUMPTION + (taskCpuLevel / 100) * (MAX_CONSUMPTION - MIN_CONSUMPTION);
     }
 
     private void pushInfoToContainer() {
@@ -229,7 +248,7 @@ public class ComputeNode extends Simulator {
 
         logger.info("+++ gridPower = [" + this.gridPower + "]");
 
-        CpuUtils.handleCpuLevel(this.gridPower); // todo: philipp said apply a power model here. what does it mean? do we still limit cpu
+        CpuUtils.handleCpuLevel(this.gridPower);
     }
 
     private void handleBatteryPowerValue(double batteryPower) {
