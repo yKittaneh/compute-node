@@ -16,6 +16,8 @@ import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestTemplate;
 
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -63,6 +65,8 @@ public class ComputeNode extends Simulator {
     private static double MIN_CONSUMPTION;
 
     private static double MAX_CONSUMPTION;
+
+    private static Boolean isRestServerReachable = null;
 
     public ComputeNode(String simName, String restUrl) {
         super(simName);
@@ -191,27 +195,52 @@ public class ComputeNode extends Simulator {
     }
 
     private void pushInfoToContainer() {
-        logger.info("pushing input map to container");
+        if (isRestServerReachable()) {
+            logger.info("pushing input map to container");
 
-        logger.info("sending rest request to " + REST_SERVICE_URL + "/stepInformation");
+            logger.info("sending rest request to " + REST_SERVICE_URL + "/stepInformation");
 
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        ObjectMapper objectMapper = new ObjectMapper();
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            ObjectMapper objectMapper = new ObjectMapper();
 
-        Map<String, Double> infoMap = new HashMap<>();
-        infoMap.put("pv_power", this.pvPower);
-        infoMap.put("battery_power", this.batteryPower);
+            Map<String, Double> infoMap = new HashMap<>();
+            infoMap.put("pv_power", this.pvPower);
+            infoMap.put("battery_power", this.batteryPower);
 
-        try {
-            String json = objectMapper.writeValueAsString(infoMap);
-            HttpEntity<String> request = new HttpEntity<>(json, headers);
-            ResponseEntity<String> response = restTemplate.postForEntity(REST_SERVICE_URL + "/stepInformation", request, String.class);
+            try {
+                String json = objectMapper.writeValueAsString(infoMap);
+                HttpEntity<String> request = new HttpEntity<>(json, headers);
+                ResponseEntity<String> response = restTemplate.postForEntity(REST_SERVICE_URL + "/stepInformation", request, String.class);
 
-            logger.info("response: " + response);
-        } catch (JsonProcessingException e) {
-            throw new RuntimeException(e);
+                logger.info("response: " + response);
+            } catch (JsonProcessingException e) {
+                throw new RuntimeException(e);
+            }
+        } else
+            logger.warning("rest server not reachable, skipping pushing info to container");
+    }
+
+    private static boolean isRestServerReachable() {
+        if (isRestServerReachable == null) {
+            logger.info("checking if rest server is reachable");
+            try {
+                URL url = new URL(REST_SERVICE_URL);
+                HttpURLConnection huc = (HttpURLConnection) url.openConnection();
+
+                int responseCode = huc.getResponseCode();
+
+                logger.info("rest server responseCode = " + responseCode);
+
+                isRestServerReachable = true;
+            } catch (Exception ex) {
+                logger.warning("failed to reach rest server with url: " + REST_SERVICE_URL);
+                logger.severe("Exception: \n" + ex);
+                logger.warning("continuing without pushing info to rest server");
+                isRestServerReachable = false;
+            }
         }
+        return isRestServerReachable;
     }
 
     private void handlePvPowerValue(double pvPower) {
@@ -248,5 +277,4 @@ public class ComputeNode extends Simulator {
 
         logger.info("finished testRestServer");
     }
-
 }
