@@ -39,7 +39,7 @@ public class ComputeNode extends Simulator {
             + "        'ComputeNode': {"
             + "            'public': true,"
             + "            'params': [],"
-            + "            'attrs': ['battery_power', 'pv_power', 'container_need']"
+            + "            'attrs': ['battery_power', 'pv_power', 'container_need', 'cpu_level']"
             + "        }"
             + "    }"
             + "}").replace("'", "\""));
@@ -54,9 +54,13 @@ public class ComputeNode extends Simulator {
 
     private static String ENTITY_ID;
 
+    private static Float TIME_RESOLUTION;
+
     private double pvPower;
     private double batteryPower;
     private double containerNeed;
+
+    private double cpuLevel;
 
     private static RestTemplate restTemplate;
 
@@ -109,10 +113,10 @@ public class ComputeNode extends Simulator {
 
     @Override
     public Map<String, Object> init(String sid, Float timeResolution, Map<String, Object> simParams) {
-        logger.info("init called ");
+        ENTITY_ID = "computeNode";
 
-        if (simParams.containsKey("eid"))
-            ENTITY_ID = simParams.get("eid").toString();
+        if (timeResolution != null)
+            TIME_RESOLUTION = timeResolution;
 
         if (simParams.containsKey("step_size"))
             STEP_SIZE = (Long) simParams.get("step_size");
@@ -128,7 +132,6 @@ public class ComputeNode extends Simulator {
 
     @Override
     public List<Map<String, Object>> create(int num, String model, Map<String, Object> modelParams) throws Exception {
-        logger.info("create called ");
         if (num != 1)
             throw new RuntimeException("Value of param 'num' in create method = [" + num + "], expected 1. System design only allows for one entity per simulation.");
 
@@ -145,8 +148,6 @@ public class ComputeNode extends Simulator {
 
     @Override
     public long step(long time, Map<String, Object> inputs, long maxAdvance) {
-        logger.info("step called ");
-
         Map.Entry<String, Object> entity = (Map.Entry<String, Object>) inputs.entrySet().toArray()[0];
         Map<String, Object> attributes = (Map<String, Object>) entity.getValue();
 
@@ -166,8 +167,6 @@ public class ComputeNode extends Simulator {
 
     @Override
     public Map<String, Object> getData(Map<String, List<String>> outputs) {
-        logger.info("getData called ");
-
         Map<String, Object> data = new HashMap<>();
         Map<String, Object> values = new HashMap<>();
 
@@ -175,17 +174,23 @@ public class ComputeNode extends Simulator {
         if (!ENTITY_ID.equals(entity.getKey()))
             throw new RuntimeException("wrong entity id received [" + entity.getKey() + "], expected [" + ENTITY_ID + "].");
 
-        String attr = entity.getValue().get(0);
-        if ("container_need".equals(attr)) {
-            this.containerNeed = applyPowerModel(CpuUtils.getTaskCpuLevel());
-            values.put(attr, this.containerNeed);
-            logger.info("container_need = " + this.containerNeed);
-        } else {
-            logger.warning("unexpected attr requested [" + attr + "]");
-            throw new RuntimeException("unexpected attr requested [" + attr + "]");
+        Double cpu = CpuUtils.getTaskCpuLevel();
+        for (String attr : entity.getValue()) {
+            if ("container_need".equals(attr)) {
+                this.containerNeed = applyPowerModel(cpu);
+                values.put(attr, this.containerNeed);
+                logger.info("container_need = " + this.containerNeed);
+            }
+            else if ("cpu_level".equals(attr)) {
+                this.cpuLevel = cpu;
+                values.put(attr, this.cpuLevel);
+                logger.info("cpu_level = " + this.cpuLevel);
+            } else {
+                logger.warning("unexpected attr requested [" + attr + "]");
+                throw new RuntimeException("unexpected attr requested [" + attr + "]");
+            }
+            data.put(ENTITY_ID, values);
         }
-
-        data.put(ENTITY_ID, values);
 
         return data;
     }

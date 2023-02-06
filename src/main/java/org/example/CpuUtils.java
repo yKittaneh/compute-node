@@ -1,86 +1,80 @@
 package org.example;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.logging.Logger;
 
 public class CpuUtils {
     private static final Logger logger = Logger.getLogger(CpuUtils.class.getName());
 
-    private static final String CONTAINER_NAME_PREFIX = "mosaik_container_";
-
-    private static String CONTAINER_NAME;
-
-    private static final String TASK_NAME = "TaskSimulator";
-
     public static void main(String[] args) {
         logger.info("CpuUtils.main called");
 
         getTaskCpuLevel();
-
-//        getContainerName();
     }
 
-    public static double getTaskCpuLevel() {
-        logger.info("CpuUtils.getTaskCpuLevel called");
+    public static Double getTaskCpuLevel() {
+        String taskCPU = null;
 
-        if (isStringEmpty(CONTAINER_NAME))
-            getContainerName();
-//        Todo: how could computeNode know the name of the task to choose/grep it out of the result of docker top?! pass it as param from mosaik?
-        String command = "docker top " + CONTAINER_NAME + " o pid,pcpu,cmd | awk '{ printf(\"%s === %s === %s\\n\", $2, $6, $7); }' | grep " + TASK_NAME;
+        String command = "top -b -n 1 -o +%CPU -c -w512 | sed -n '7,15p' | awk '{printf \"%9s === %-6s === %s ;\\n\",$1,$9,$0}'";
 
-        String resultLine = runCommandAndExtractLine(command, TASK_NAME);
+        ProcessBuilder pb = new ProcessBuilder();
+        pb.command("bash", "-c", command);
+        pb.redirectError();
 
-        if (resultLine == null)
-            throw new RuntimeException("Could not find task [" + TASK_NAME + "] in the result of command " + command + " - make sure the task is running and its name contains " + TASK_NAME);
+        StringBuilder sb = new StringBuilder();
+        List<String> list = new ArrayList<>();
+        char c;
 
-        String[] splitResult = resultLine.split("===");
-
-        logger.info("CPU level = " + splitResult[0].trim());
-        return Double.parseDouble(splitResult[0].trim());
-    }
-
-    private static void getContainerName() {
-        logger.info("CpuUtils.getContainerName called");
-        String command = "docker ps --filter \"name=" + CONTAINER_NAME_PREFIX + "\" --format \"table {{.Names}}\"";
-
-        CONTAINER_NAME = runCommandAndExtractLine(command, CONTAINER_NAME_PREFIX);
-
-        if (CONTAINER_NAME == null)
-            throw new RuntimeException("Could not find container in the result of command " + command + " - make sure the container is running and its name starts with " + CONTAINER_NAME_PREFIX);
-
-        logger.info("CONTAINER_NAME = " + CONTAINER_NAME);
-    }
-
-    private static String runCommandAndExtractLine(String command, String matchingString) {
-        String line;
-        String resultLine = null;
-        logger.info("going to run command " + command + ". Looking for [" + matchingString + "]");
         try {
-            ProcessBuilder builder = new ProcessBuilder();
-            builder.command("bash", "-c", command);
-            Process process = builder.start();
-            BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-            while ((line = bufferedReader.readLine()) != null) {
-                if (line.contains(matchingString)) {
-                    resultLine = line;
-                    logger.info("found it! ... " + CONTAINER_NAME);
+            Process p = pb.start();
+            InputStream is = p.getInputStream();
+            int value;
+            while ((value = is.read()) != -1) {
+                c = ((char) value);
+                if (c == '\n') {
+                    list.add(sb.toString());
+                    sb.setLength(0);
+                    continue;
+                }
+                sb.append(c);
+            }
+            int exitCode = p.waitFor();
+            logger.info("Top exited with " + exitCode);
+
+            if (exitCode != 0) {
+                sb.setLength(0);
+                InputStream error = p.getErrorStream();
+                while ((value = error.read()) != -1)
+                    sb.append(((char) value));
+                logger.warning("Error stream: " + sb);
+            }
+
+//            logger.info("Output:\n" + sb);
+//            for (String ss : list){
+//                logger.info(ss);
+//            }
+
+            p.destroyForcibly();
+
+            for (String ss : list) {
+                if (ss.contains("TaskSimulator")) {
+                    taskCPU = ss.split("===")[1].trim();
+                    logger.info("TaskSimulator cpu = " + taskCPU);
                     break;
                 }
             }
 
-            process.waitFor();
-            logger.info("exit: " + process.exitValue());
-            process.destroy();
-
-            return resultLine;
-        } catch (Exception ex) {
-            throw new RuntimeException("Error while getting container name", ex);
+        } catch (IOException | InterruptedException exp) {
+            throw new RuntimeException(exp);
         }
-    }
 
-    public static boolean isStringEmpty(String string) {
-        return string == null || string.isEmpty();
+        if (taskCPU != null)
+            return Double.valueOf(taskCPU.replace(",", "."));
+        else
+            return null;
     }
 
 }
